@@ -231,6 +231,16 @@ def check_no_resources(ctx: Context):
         ctx, CTX_DESIRED_RESOURCES, assert_exists=False)
     check_resources_are_empty(desired_resources)
 
+@then('rendering fails with error message containing "{expected_error}"')
+def fail_with_error(ctx: Context, expected_error: str):
+    args = prepare_render_args(ctx)
+    out = subprocess.run(args, capture_output=True, text=True)
+
+    allure.attach(out.stdout, name="render stdout")
+    allure.attach(out.stderr, name="render stderr")
+
+    assert out.returncode != 0, "Expected render to fail but it succeeded"
+    assert expected_error in out.stderr, f"Expected error '{expected_error}' not found in stderr: {out.stderr}"
 
 @step("check that {resource_count:d} resource is provisioning")
 @step("check that {resource_count:d} resources are provisioning")
