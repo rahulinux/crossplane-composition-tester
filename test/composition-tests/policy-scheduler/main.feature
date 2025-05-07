@@ -24,10 +24,85 @@ Feature: Policy scheduler composition
     And input functions functions.yaml
     Then check that no resources are provisioning
 
-  @normal
-  Scenario: TODO
+  @critical
+  Scenario: create role within the scheduled window
 
     # render 1
+    Given input claim is changed with parameters
+      | param name                      | param value          |
+      | spec.schedules[0].scheduleFrom  | 2025-01-01T00:00:00Z |
+      | spec.schedules[0].scheduleUntil | 2025-12-31T00:00:00Z |
+      | spec.schedules[1].scheduleFrom  | 2025-01-01T00:00:00Z |
+      | spec.schedules[1].scheduleUntil | 2025-12-31T00:00:00Z |
+    When crossplane renders the composition
+    Then check that 2 resources are provisioning
+      | resource-name    |
+      | role-app-1-rpa   |
+      | role-app-2-rpa   |
+
+    # render 2
+    Given change following observed resources with status READY
+      | resource-name  |
+      | role-app-1     |
+      | role-app-2     |
+    When crossplane renders the composition
+    Then check that 4 resources are provisioning and they are
+      | resource-name  |
+      | role-app-1     |
+      | role-app-2     |
+      | role-app-1-rpa |
+      | role-app-2-rpa |
+    And check that resource role-app-1-rpa has parameters
+      | param name                 | param value |
+      | spec.forProvider.roleName  | role-app-1  |
+      | spec.forProvider.policyArn | arn:aws:iam::aws:policy/AmazonPolicy1  |
+    And check that resource role-app-2-rpa has parameters
+      | param name                 | param value |
+      | spec.forProvider.roleName  | role-app-2  |
+      | spec.forProvider.policyArn | arn:aws:iam::aws:policy/AmazonPolicy2  |
+
+  @critial
+  Scenario: prevent creating role outside schedule window
+
+    Given input claim is changed with parameters
+      | param name                      | param value          |
+      | spec.schedules[0].scheduleFrom  | 2024-01-01T00:00:00Z |
+      | spec.schedules[0].scheduleUntil | 2024-12-31T00:00:00Z |
+      | spec.schedules[1].scheduleFrom  | 2024-01-01T00:00:00Z |
+      | spec.schedules[1].scheduleUntil | 2024-12-31T00:00:00Z |
     When crossplane renders the composition
     Then check that no resources are provisioning
-    # TODO follow the example from service-account.feature and write similar steps to test the policy scheduler composition
+
+  @critial
+  Scenario: do not allow role creation when the schedule start time is after the end time
+   Given input claim is changed with parameters
+     | param name                      | param value          |
+     | spec.schedules[0].scheduleFrom  | 2031-01-01T00:00:00Z |
+     | spec.schedules[0].scheduleUntil | 2024-12-31T00:00:00Z |
+     | spec.schedules[1].scheduleFrom  | 2031-01-01T00:00:00Z |
+     | spec.schedules[1].scheduleUntil | 2024-12-31T00:00:00Z |
+   And input composition composition.yaml
+   When crossplane renders the composition
+   Then check that no resources are provisioning
+
+  @critial
+  Scenario: role should not be created when date-time formatting is invalid
+   Given input claim is changed with parameters
+     | param name                      | param value          |
+     | spec.schedules[0].scheduleFrom  | 2031-13-01T00:00:00Z |
+   Then rendering fails with error message containing "month out of range"
+
+   Given input claim is changed with parameters
+     | param name                      | param value          |
+     | spec.schedules[0].scheduleFrom  | 2031-12-32T00:00:00Z |
+   Then rendering fails with error message containing "day out of range"
+
+   Given input claim is changed with parameters
+     | param name                      | param value      |
+     | spec.schedules[0].scheduleFrom  | 2031-12-01T00:00 |
+   Then rendering fails with error message containing "cannot parse"
+
+   Given input claim is changed with parameters
+     | param name                      | param value          |
+     | spec.schedules[0].scheduleFrom  | 01-01-2025T00:00:00Z |
+   Then rendering fails with error message containing "error calling mustToDate"
