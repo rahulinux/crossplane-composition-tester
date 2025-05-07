@@ -35,7 +35,9 @@ spec:
                         description: The policy ARN to attach to the role
                       scheduleFrom:
                         type: string
-                        description: TODO adapt the format of the time as it fits better for usability and handling in the composition
+                        format: date-time
+                        description: Start of the schedule (RFC3339 date-time, e.g. 2023-01-01T00:00:00Z)
                       scheduleUntil:
                         type: string
-                        description: TODO adapt the format of the time as it fits better for usability and handling in the composition
+                        format: date-time
+                        description: End of the schedule (RFC3339 date-time, e.g. 2023-12-31T23:59:59Z)
