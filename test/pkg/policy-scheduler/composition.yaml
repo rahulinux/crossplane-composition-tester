@@ -1,0 +1,125 @@
+# Copyright 2023 Swisscom (Schweiz) AG
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: xpolicyscheduler.aws.example.com
+spec:
+  compositeTypeRef:
+    apiVersion: policyscheduler.example.com/v1alpha1
+    kind: XPolicyScheduler
+  mode: Pipeline
+  pipeline:
+  - step: environmentConfigs
+    functionRef:
+      name: function-environment-configs
+    input:
+      apiVersion: environmentconfigs.fn.crossplane.io/v1beta1
+      kind: Input
+      spec:
+        environmentConfigs:
+        - type: Reference
+          ref:
+            name: envconfig
+  - functionRef:
+      name: function-go-templating
+    step: create-scheduled-roles
+    input:
+      apiVersion: gotemplating.fn.crossplane.io/v1beta1
+      kind: GoTemplate
+      source: Inline
+      inline:
+        template: |-
+          {{ $accountId := (index .context "apiextensions.crossplane.io/environment").accountId }}
+          {{ $region := (index .context "apiextensions.crossplane.io/environment").region }}
+          {{ $eksOID := (index .context "apiextensions.crossplane.io/environment").eksOID }}
+
+          {{- range .observed.composite.resource.spec.schedules }}
+
+          {{- if and .scheduleFrom .scheduleUntil .roleName .policyArn }}
+
+          {{- $now := now | date "2006-01-02T15:04:05Z" }}
+
+          {{/* Use mustToDate to validte date format */}}
+          {{- $start := mustToDate "2006-01-02T15:04:05Z" .scheduleFrom | date "2006-01-02T15:04:05Z" }}
+          {{- $end := mustToDate "2006-01-02T15:04:05Z" .scheduleUntil | date "2006-01-02T15:04:05Z" }}
+
+          {{/* Create role when schedule date is within the schedule window */}}
+
+          {{- if and (ge $now $start) (le $now $end) }}
+          ---
+          apiVersion: iam.aws.crossplane.io/v1beta1
+          kind: Role
+          metadata:
+            name: {{ .roleName }}
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: {{ .roleName }}
+              gotemplating.fn.crossplane.io/schedule-until: {{ $end }}
+          spec:
+            forProvider:
+              assumeRolePolicyDocument: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Principal": {
+                        "Federated": "arn:aws:iam::{{$accountId}}:oidc-provider/oidc.eks.{{$region}}.amazonaws.com/id/{{$eksOID}}"
+                      },
+                      "Action": "sts:AssumeRoleWithWebIdentity",
+                      "Condition": {
+                        "StringLike": {
+                          "oidc.eks.{{$region}}.amazonaws.com/id/{{$eksOID}}:aud": "sts.amazonaws.com"
+                        }
+                      }
+                    }
+                  ]
+                }
+              permissionsBoundary: arn:aws:iam::{{$accountId}}:policy/sc-policy-cdk-pipeline-permission-boundary
+              description: managed by crossplane
+              tags:
+                - key: Source
+                  value: "xPolicyScheduler"
+            providerConfigRef:
+              name: providerconfig-aws
+
+          {{/* attach policy when role is ready */}}
+
+          {{ if and (ne $.observed.resources nil) (ne ( index $.observed.resources .roleName) nil) }}
+          {{ if eq (( index $.observed.resources .roleName) | getResourceCondition "Ready").Status "True" }}
+          ---
+          apiVersion: iam.aws.crossplane.io/v1beta1
+          kind: RolePolicyAttachment
+          metadata:
+            name: {{ .roleName }}-rpa
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: {{ .roleName }}-rpa
+          spec:
+            forProvider:
+              policyArn: {{ .policyArn }}
+              roleName: {{ .roleName }}
+            providerConfigRef:
+              name: providerconfig-aws
+          {{- end }}
+          {{- end }}
+
+
+          {{- end }}
+          {{- end }}
+          {{- end }}
+
+  - step: automatically-detect-ready-composed-resources
+    functionRef:
+      name: function-auto-ready
