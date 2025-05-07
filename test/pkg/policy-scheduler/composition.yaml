@@ -35,20 +35,90 @@ spec:
             name: envconfig
   - functionRef:
       name: function-go-templating
-    step: sample-step-1
+    step: create-scheduled-roles
     input:
       apiVersion: gotemplating.fn.crossplane.io/v1beta1
       kind: GoTemplate
       source: Inline
       inline:
         template: |-
-          {{/* TODO: implement the composition with one or more steps. The function can be any function from https://github.com/crossplane-contrib?q=function or custom one. Explain your choice. */}}
-          {{/* TODO: the composition must: */}}
-          {{/*  1. handle all schedules from the schedules list */}}
-          {{/*  2. for each schedule: provision the role and assign the policy ONLY during the time interval specified by the scheduleFrom and scheduleUntil */}}
-          {{/* TODO: write composition tests to demonstrate how the composition functions; write as many relevant tests as you consider. Justify the choices made! */}}
-          {{/* HINT 1: Make use of tags to run a sub set of tests. For example: ./tests_runner.sh test -t PolicyScheduler -t normal */}}
-          {{/* HINT 2: Make use of debug flag to get the observed and desired states of each crossplane iteration. Check ./dump folder. For example: ./tests_runner.sh test -d */}}
+          {{ $accountId := (index .context "apiextensions.crossplane.io/environment").accountId }}
+          {{ $region := (index .context "apiextensions.crossplane.io/environment").region }}
+          {{ $eksOID := (index .context "apiextensions.crossplane.io/environment").eksOID }}
+
+          {{- range .observed.composite.resource.spec.schedules }}
+
+          {{- if and .scheduleFrom .scheduleUntil .roleName .policyArn }}
+
+          {{- $now := now | date "2006-01-02T15:04:05Z" }}
+
+          {{/* Use mustToDate to validte date format */}}
+          {{- $start := mustToDate "2006-01-02T15:04:05Z" .scheduleFrom | date "2006-01-02T15:04:05Z" }}
+          {{- $end := mustToDate "2006-01-02T15:04:05Z" .scheduleUntil | date "2006-01-02T15:04:05Z" }}
+
+          {{/* Create role when schedule date is within the schedule window */}}
+
+          {{- if and (ge $now $start) (le $now $end) }}
+          ---
+          apiVersion: iam.aws.crossplane.io/v1beta1
+          kind: Role
+          metadata:
+            name: {{ .roleName }}
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: {{ .roleName }}
+              gotemplating.fn.crossplane.io/schedule-until: {{ $end }}
+          spec:
+            forProvider:
+              assumeRolePolicyDocument: |
+                {
+                  "Version": "2012-10-17",
+                  "Statement": [
+                    {
+                      "Effect": "Allow",
+                      "Principal": {
+                        "Federated": "arn:aws:iam::{{$accountId}}:oidc-provider/oidc.eks.{{$region}}.amazonaws.com/id/{{$eksOID}}"
+                      },
+                      "Action": "sts:AssumeRoleWithWebIdentity",
+                      "Condition": {
+                        "StringLike": {
+                          "oidc.eks.{{$region}}.amazonaws.com/id/{{$eksOID}}:aud": "sts.amazonaws.com"
+                        }
+                      }
+                    }
+                  ]
+                }
+              permissionsBoundary: arn:aws:iam::{{$accountId}}:policy/sc-policy-cdk-pipeline-permission-boundary
+              description: managed by crossplane
+              tags:
+                - key: Source
+                  value: "xPolicyScheduler"
+            providerConfigRef:
+              name: providerconfig-aws
+
+          {{/* attach policy when role is ready */}}
+
+          {{ if and (ne $.observed.resources nil) (ne ( index $.observed.resources .roleName) nil) }}
+          {{ if eq (( index $.observed.resources .roleName) | getResourceCondition "Ready").Status "True" }}
+          ---
+          apiVersion: iam.aws.crossplane.io/v1beta1
+          kind: RolePolicyAttachment
+          metadata:
+            name: {{ .roleName }}-rpa
+            annotations:
+              gotemplating.fn.crossplane.io/composition-resource-name: {{ .roleName }}-rpa
+          spec:
+            forProvider:
+              policyArn: {{ .policyArn }}
+              roleName: {{ .roleName }}
+            providerConfigRef:
+              name: providerconfig-aws
+          {{- end }}
+          {{- end }}
+
+
+          {{- end }}
+          {{- end }}
+          {{- end }}
 
   - step: automatically-detect-ready-composed-resources
     functionRef:
