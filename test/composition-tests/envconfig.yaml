@@ -5,3 +5,4 @@ metadata:
 data:
   accountId: "1234"
   region: "eu-central-1"
+  eksOID: "4321"
